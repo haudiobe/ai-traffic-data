@@ -83,3 +83,14 @@ python -m pytest -q
 
 See [docs/crosscheck-S4-262210.md](docs/crosscheck-S4-262210.md) for the
 crosscheck of the S4-262210 annotated workbook.
+
+## Stage 2: characteristic-level CROSSCHECK
+
+`python -m traffic_annotation.characteristics` evaluates characteristics
+across independent organizations. It applies the CROSSCHECK states
+`NOT_ASSESSED`, `SINGLE_SOURCE`, `MULTI_SOURCE_NOT_COMPARABLE`,
+`CROSSCHECK_PENDING`, `CROSSCHECKED_CONSISTENT`, `CROSSCHECKED_MIXED` and
+`CROSSCHECKED_CONFLICTING`, with explicit comparability over nine dimensions
+and verbatim-citation checks, and writes a four-tab review XLSX.
+`python -m traffic_annotation.publication` checks staged changes before a
+commit. See [docs/stage2-characteristic-crosscheck.md](docs/stage2-characteristic-crosscheck.md).

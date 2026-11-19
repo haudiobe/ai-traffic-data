@@ -16,7 +16,10 @@ dev = ["pytest>=8"]
 traffic-annotation = "traffic_annotation.cli:main"
 
 [tool.setuptools]
-packages = ["traffic_annotation"]
+packages = ["traffic_annotation", "traffic_annotation.characteristics"]
+
+[tool.setuptools.package-data]
+"traffic_annotation.characteristics" = ["rules.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

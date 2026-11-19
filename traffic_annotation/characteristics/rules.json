@@ -1,0 +1,28 @@
+{
+  "schema": "traffic-annotation/crosscheck-rules@1",
+  "min_independent_organizations": 2,
+  "required_dimensions": [
+    "definition",
+    "units",
+    "direction",
+    "scenario",
+    "measurement_layer",
+    "baseline",
+    "network_conditions",
+    "statistical_basis",
+    "qualitative_conclusion"
+  ],
+  "dimension_status_effect": {
+    "COMPARABLE": "ok",
+    "PARTIAL": "pending",
+    "UNKNOWN": "pending",
+    "NOT_COMPARABLE": "not_comparable"
+  },
+  "outcome": {
+    "deadband": 0.05,
+    "magnitude_tolerance": 0.10,
+    "min_common_points": 2,
+    "conflicting_point_share": 0.5
+  },
+  "reported_value_tolerance": 0.0006
+}
