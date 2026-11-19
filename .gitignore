@@ -1,0 +1,31 @@
+# --- Confidentiality guard -------------------------------------------------
+# Source documents, extracted measurement data and review outputs must never
+# be committed to this (public) repository. Keep them outside the repo and
+# pass their paths to the CLI at runtime.
+*.xlsx
+*.xlsm
+*.xls
+*.docx
+*.doc
+*.pptx
+*.pdf
+*.zip
+*.csv
+*.tsv
+*.parquet
+data/
+private/
+out/
+output/
+review/
+_review/
+*.local.json
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+build/
+dist/

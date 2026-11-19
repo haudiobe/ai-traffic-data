@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traffic-annotation"
+version = "0.1.0"
+description = "Automated traffic-characteristic annotation and CROSSCHECK pipeline for collated AI traffic characterization workbooks (TR 26.870 Annex B.4 data management)."
+requires-python = ">=3.10"
+dependencies = ["openpyxl>=3.1", "python-docx>=1.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+traffic-annotation = "traffic_annotation.cli:main"
+
+[tool.setuptools]
+packages = ["traffic_annotation"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
