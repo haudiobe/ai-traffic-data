@@ -5,7 +5,12 @@ Resolution rules (no inference):
   dash-normalized) in the cited cell; unverified claims count as UNKNOWN;
 * numeric values are read from cited cells only; a numeric constant (e.g. a
   denominator) must also occur inside its verified quote;
-* x-axis conditions are parsed from the cited header cells.
+* x-axis conditions are parsed from the cited header cells;
+* a denominator basis (e.g. all questions vs questions received at the
+  server) is used only if its source quote is verified;
+* reported derived values are recomputed from source counts; where they are
+  not reproduced, common computation conventions are tested and reported as a
+  diagnosis. Measured values are never changed.
 """
 from __future__ import annotations
 
@@ -42,7 +47,7 @@ def _claim(d):
 def _den(d):
     if not d:
         return None
-    return Denominator(d.get("value"), _ref(d.get("source")), d.get("cells"))
+    return Denominator(d.get("value"), _ref(d.get("source")), d.get("cells"), d.get("basis"))
 
 
 def _series(d):
@@ -148,6 +153,10 @@ class ResolvedItem:
     denominators: list = field(default_factory=list)
     alt_rel_change: dict = field(default_factory=dict)
     reported_change: dict = field(default_factory=dict)
+    alt_reported_change: dict = field(default_factory=dict)
+    basis: str | None = None  # verified basis of the primary denominator
+    alt_basis: str | None = None  # verified basis of the alternative denominator
+    reported_diagnosis: dict = field(default_factory=dict)  # label -> x -> diagnosis
     issues: list = field(default_factory=list)
     cited_cells: list = field(default_factory=list)  # "sheet!cell"
 
@@ -241,43 +250,66 @@ def resolve(item: EvidenceItem, wb, tol: float) -> ResolvedItem:
     r.rel_change = {x: (v - base) / base for x, v in zip(xs, vals)}
 
     # denominators (must be cited; constants must be inside a verified quote)
+    den_info = {}  # label -> (baseline denominator, per-condition denominators)
     for label, den in (("denominator", s.denominator), ("alt_denominator", s.alt_denominator)):
         if den is None:
             continue
+        src_ok = None
+        if den.source is not None:
+            src_ok = verify_ref(wb, den.source, r.issues, f"{item.id}/{label}")
+            r.cited_cells.append(f"{den.source.sheet}!{den.source.cell}")
+        if den.basis:
+            if src_ok:
+                if label == "denominator":
+                    r.basis = den.basis
+                else:
+                    r.alt_basis = den.basis
+            else:
+                r.issues.append(Issue("WARNING", "citation", f"{item.id}/{label}",
+                                      f"basis '{den.basis}' has no verified source quote; treated as unspecified",
+                                      "Cite the cell that states the denominator"))
         if den.cells:
             dvals = [_num(v) for v in _cells(ws, den.cells)]
             r.cited_cells.append(f"{s.sheet}!{den.cells}")
             if len(dvals) != len(xs) or any(v in (None, 0) for v in dvals):
                 r.issues.append(Issue("ERROR", "series", item.id, f"{label} cells invalid"))
                 continue
+            # baseline denominator is the cell left of the range start
+            min_col, min_row, _, _ = range_boundaries(den.cells)
+            bden = _num(ws.cell(min_row, min_col - 1).value)
             if label == "denominator":
                 r.denominators = dvals
-            else:
-                # relative change of accuracy with per-condition denominators;
-                # baseline denominator is the cell left of the range start
-                min_col, min_row, _, _ = range_boundaries(den.cells)
-                bden = _num(ws.cell(min_row, min_col - 1).value)
-                if not bden:
-                    r.issues.append(Issue("WARNING", "series", item.id, f"{label}: baseline denominator not numeric"))
-                    continue
+            if not bden:
+                r.issues.append(Issue("WARNING", "series", item.id, f"{label}: baseline denominator not numeric"))
+                continue
+            den_info[label] = (bden, dvals)
+            if label == "alt_denominator":
+                # relative change of accuracy with per-condition denominators
                 b_acc = base / bden
                 r.alt_rel_change = {x: (v / d) / b_acc - 1 for x, v, d in zip(xs, vals, dvals)}
         elif den.value is not None:
-            ok = den.source is not None and verify_ref(wb, den.source, r.issues, f"{item.id}/{label}")
+            ok = bool(src_ok)
+            if den.source is None:
+                r.issues.append(Issue("WARNING", "citation", f"{item.id}/{label}", "denominator constant not cited"))
             if ok and not _constant_in_quote(den.value, den.source.quote):
                 r.issues.append(Issue("ERROR", "citation", f"{item.id}/{label}",
                                       f"value {den.value} does not occur in the cited quote"))
                 ok = False
             if ok:
                 r.denominators = [float(den.value)] * len(xs)
-                r.cited_cells.append(f"{den.source.sheet}!{den.source.cell}")
+                den_info[label] = (float(den.value), r.denominators)
             else:
+                if label == "denominator":
+                    r.basis = None
+                else:
+                    r.alt_basis = None
                 r.issues.append(Issue("WARNING", "series", item.id, f"{label} not verified; not used"))
 
     # reported change cross-verification (definition check)
-    for cells, computed, store, label in (
-            (s.reported_change_cells, r.rel_change, r.reported_change, "reported change"),
-            (s.alt_reported_change_cells, r.alt_rel_change, {}, "reported change (alt. denominator)")):
+    for cells, computed, store, label, dkey in (
+            (s.reported_change_cells, r.rel_change, r.reported_change, "reported change", "denominator"),
+            (s.alt_reported_change_cells, r.alt_rel_change, r.alt_reported_change,
+             "reported change (alt. denominator)", "alt_denominator")):
         if not cells:
             continue
         rep = _cells(ws, cells)
@@ -293,13 +325,54 @@ def resolve(item: EvidenceItem, wb, tol: float) -> ResolvedItem:
             store[x] = nv
             if abs(nv - computed[x]) > tol:
                 n_bad += 1
+                action = "Confirm the metric definition / rounding used by the contributor"
+                if dkey in den_info:
+                    bden, dvals = den_info[dkey]
+                    i = xs.index(x)
+                    diag = diagnose_reported(base, bden, vals[i], dvals[i], nv)
+                    r.reported_diagnosis.setdefault(label, {})[x] = diag
+                    found = ("Reproduced only by: " + "; ".join(diag["matches"])) if diag["matches"] \
+                        else "Not reproduced by any tested convention"
+                    action = found + ". Measured values unchanged; confirm the computation with the contributor"
                 r.issues.append(Issue("WARNING", "definition", item.id,
                                       f"{label} at x={x:g} is not reproduced from source counts within "
                                       f"tolerance {tol} (|difference| = {abs(nv - computed[x]):.4f})",
-                                      "Confirm the metric definition / rounding used by the contributor"))
+                                      action))
             else:
                 n_ok += 1
         if n_ok and not n_bad:
             r.issues.append(Issue("INFO", "definition", item.id,
                                   f"{n_ok} {label} values reproduced from source counts within tolerance {tol}"))
     return r
+
+
+# ---------------------------------------------------------------------------
+# Diagnosis of reported derived values
+# ---------------------------------------------------------------------------
+def _decimals(v: float) -> int:
+    t = repr(float(v))
+    if "e" in t or "." not in t:
+        return 6
+    return max(1, min(len(t.split(".")[1].rstrip("0")), 6))
+
+
+def candidate_conventions(base, bden, value, den) -> dict:
+    """Ways a reported 'change vs baseline' may have been computed from counts."""
+    exact = (value / den) / (base / bden) - 1
+    out = {"exact ratio of accuracies": exact}
+    for k in (2, 3, 4):
+        b = round(base / bden, k)
+        if b:
+            out[f"accuracies rounded to {k} decimals before division"] = round(value / den, k) / b - 1
+    out["ratio of correct counts (denominator ignored)"] = value / base - 1
+    out["difference of accuracies (absolute, not relative)"] = value / den - base / bden
+    return out
+
+
+def diagnose_reported(base, bden, value, den, reported) -> dict:
+    """Which conventions reproduce ``reported`` at its own precision. Never changes values."""
+    dp = _decimals(reported)
+    cands = candidate_conventions(base, bden, value, den)
+    matches = sorted(k for k, v in cands.items() if abs(round(v, dp) - reported) < 1e-9)
+    return {"reported": reported, "decimals": dp, "exact": cands["exact ratio of accuracies"],
+            "candidates": {k: round(v, 6) for k, v in sorted(cands.items())}, "matches": matches}

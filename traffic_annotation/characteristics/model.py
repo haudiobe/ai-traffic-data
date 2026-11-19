@@ -32,6 +32,9 @@ OUTCOMES = ("CONSISTENT", "MIXED", "CONFLICTING", "INSUFFICIENT")
 
 SEVERITIES = ("ERROR", "WARNING", "QUALIFIED_GAP", "INFO")
 
+THRESHOLD_STATUSES = ("EXPERIMENTAL", "APPROVED")
+AUTHORITY = ("AUTHORITATIVE", "PROVISIONAL", "NOT_APPLICABLE")
+
 
 @dataclass(frozen=True)
 class SourceRef:
@@ -54,6 +57,7 @@ class Denominator:
     value: float | None = None
     source: SourceRef | None = None
     cells: str | None = None  # per-condition denominators (range)
+    basis: str | None = None  # e.g. "all_questions", "received_at_server"; needs a verified source
 
 
 @dataclass
@@ -138,6 +142,13 @@ def load_rules(path: Path | None = None) -> dict:
     unknown = set(rules["required_dimensions"]) - set(DIMENSIONS)
     if unknown:
         raise ValueError(f"unknown dimensions in rules: {sorted(unknown)}")
+    rules.setdefault("strict_dimensions", [])
+    unknown = set(rules["strict_dimensions"]) - set(DIMENSIONS)
+    if unknown:
+        raise ValueError(f"unknown strict dimensions in rules: {sorted(unknown)}")
+    rules.setdefault("threshold_status", "EXPERIMENTAL")
+    if rules["threshold_status"] not in THRESHOLD_STATUSES:
+        raise ValueError(f"threshold_status must be one of {THRESHOLD_STATUSES}")
     for st, eff in rules["dimension_status_effect"].items():
         if st not in DIM_STATUSES or eff not in ("ok", "pending", "not_comparable"):
             raise ValueError(f"invalid dimension_status_effect {st}: {eff}")

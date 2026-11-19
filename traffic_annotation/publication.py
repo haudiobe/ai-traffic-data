@@ -12,6 +12,10 @@ source-derived and must stay outside the repository.
 ``check`` inspects only what is staged (``git diff --cached``): forbidden file
 types, document numbers, denylisted terms and numbers in added lines.
 Exit code 1 if anything is found.
+
+``history`` applies the same rules to every file version and commit message
+reachable from any ref (local and remote-tracking). It reports which paths and
+commits contain findings, for disclosure review. It never rewrites history.
 """
 from __future__ import annotations
 
@@ -99,24 +103,90 @@ def staged_additions(repo: Path) -> dict:
     return files
 
 
+def _patterns(terms):
+    return [(t, re.compile(r"(?<!\w)" + re.escape(t) + r"(?!\w)", re.IGNORECASE)) for t in terms]
+
+
+def _scan_lines(f, lines, pats, numbers) -> list:
+    hits = []
+    for ln, text in lines:
+        for m in TDOC_RE.findall(text):
+            hits.append(Hit(f, ln, "document-number", m))
+        for t, p in pats:
+            if p.search(text):
+                hits.append(Hit(f, ln, "denylisted-term", t))
+        for n in BIGNUM_RE.findall(text):
+            if n in numbers:
+                hits.append(Hit(f, ln, "source-number", n))
+    return hits
+
+
 def check(repo: Path, terms=(), numbers=frozenset()) -> list:
     hits = []
     names = [n for n in _git(repo, "diff", "--cached", "--name-only", "--diff-filter=ACMR").splitlines() if n]
     for n in names:
         if Path(n).suffix.lower() in safety.FORBIDDEN_SUFFIXES:
             hits.append(Hit(n, 0, "forbidden-file-type", Path(n).suffix))
-    pats = [(t, re.compile(r"(?<!\w)" + re.escape(t) + r"(?!\w)", re.IGNORECASE)) for t in terms]
+    pats = _patterns(terms)
     for f, lines in staged_additions(repo).items():
-        for ln, text in lines:
-            for m in TDOC_RE.findall(text):
-                hits.append(Hit(f, ln, "document-number", m))
-            for t, p in pats:
-                if p.search(text):
-                    hits.append(Hit(f, ln, "denylisted-term", t))
-            for n in BIGNUM_RE.findall(text):
-                if n in numbers:
-                    hits.append(Hit(f, ln, "source-number", n))
+        hits += _scan_lines(f, lines, pats, numbers)
     return hits
+
+
+@dataclass
+class HistoryFinding:
+    path: str  # file path, or "<commit message>"
+    blob: str  # blob id, or commit id for messages
+    commits: list  # short commit ids containing this blob
+    refs: list  # refs whose current tree contains this blob
+    kinds: dict  # kind -> count
+
+
+def history(repo: Path, terms=(), numbers=frozenset()) -> list:
+    """Scan every reachable file version and commit message."""
+    pats = _patterns(terms)
+    commits = [c for c in _git(repo, "rev-list", "--all").split() if c]
+    refs = {}
+    for line in _git(repo, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads",
+                     "refs/remotes").splitlines():
+        name, oid = line.rsplit(" ", 1)
+        if not name.endswith("/HEAD"):
+            refs[name] = oid
+    blobs = {}  # (path, blob) -> [commits]
+    for c in commits:
+        for line in _git(repo, "ls-tree", "-r", c).splitlines():
+            meta, path = line.split("\t", 1)
+            _, typ, oid = meta.split()
+            if typ == "blob":
+                blobs.setdefault((path, oid), []).append(c[:7])
+    tip = {}
+    for name, oid in refs.items():
+        for line in _git(repo, "ls-tree", "-r", oid).splitlines():
+            meta, path = line.split("\t", 1)
+            tip.setdefault((path, meta.split()[2]), []).append(name)
+    out = []
+    for (path, oid), cs in sorted(blobs.items()):
+        hits = []
+        if Path(path).suffix.lower() in safety.FORBIDDEN_SUFFIXES:
+            hits.append(Hit(path, 0, "forbidden-file-type", Path(path).suffix))
+        else:
+            text = _git(repo, "cat-file", "-p", oid)
+            hits = _scan_lines(path, enumerate(text.splitlines(), 1), pats, numbers)
+        if hits:
+            kinds = {}
+            for h in hits:
+                kinds[h.kind] = kinds.get(h.kind, 0) + 1
+            out.append(HistoryFinding(path, oid[:10], sorted(set(cs)), sorted(tip.get((path, oid), [])), kinds))
+    for c in commits:
+        msg = _git(repo, "log", "-1", "--format=%B", c)
+        hits = _scan_lines("<commit message>", enumerate(msg.splitlines(), 1), pats, numbers)
+        if hits:
+            kinds = {}
+            for h in hits:
+                kinds[h.kind] = kinds.get(h.kind, 0) + 1
+            out.append(HistoryFinding("<commit message>", c[:10], [c[:7]],
+                                      sorted(n for n, o in refs.items() if o == c), kinds))
+    return out
 
 
 def main(argv=None) -> int:
@@ -130,6 +200,9 @@ def main(argv=None) -> int:
     c = sub.add_parser("check")
     c.add_argument("--denylist", type=Path)
     c.add_argument("--repo", type=Path, default=safety.REPO_ROOT)
+    h = sub.add_parser("history")
+    h.add_argument("--denylist", type=Path)
+    h.add_argument("--repo", type=Path, default=safety.REPO_ROOT)
     a = ap.parse_args(argv)
     if a.cmd == "build":
         safety.assert_outside_repo(a.out)
@@ -139,6 +212,14 @@ def main(argv=None) -> int:
         print(f"wrote {len(items)} entries to {a.out}")
         return 0
     terms, numbers = load_denylist(a.denylist) if a.denylist else ([], set())
+    if a.cmd == "history":
+        found = history(a.repo, terms, numbers)
+        for f in found:
+            kinds = ", ".join(f"{k}={v}" for k, v in sorted(f.kinds.items()))
+            print(f"{f.path} [{f.blob}] commits={','.join(f.commits)} "
+                  f"in-current-tree-of={','.join(f.refs) or '-'}: {kinds}")
+        print(f"history: {len(found)} file version(s)/message(s) with findings")
+        return 1 if found else 0
     hits = check(a.repo, terms, numbers)
     for h in hits:
         # report the kind and location, not the matched source term itself

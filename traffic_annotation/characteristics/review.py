@@ -25,7 +25,29 @@ _STATE_FILL = {
     "CROSSCHECKED_CONFLICTING": "FFC7CE",
     "COMPARABLE": "C6EFCE", "PARTIAL": "FFEB9C", "UNKNOWN": "EDEDED", "NOT_COMPARABLE": "FFC7CE",
     "ERROR": "FFC7CE", "WARNING": "FFEB9C", "QUALIFIED_GAP": "DDEBF7", "INFO": "EDEDED",
+    "AUTHORITATIVE": "C6EFCE", "PROVISIONAL": "FFEB9C", "NOT_APPLICABLE": "EDEDED",
 }
+NON_AUTH = "NON-AUTHORITATIVE"
+
+
+def _thresholds(rules) -> str:
+    o = rules["outcome"]
+    return (f"{rules.get('threshold_status', 'EXPERIMENTAL')} thresholds: dead band {o['deadband']:g}, "
+            f"magnitude tolerance {o['magnitude_tolerance']:g}, min common points {o['min_common_points']}, "
+            f"conflicting share {o['conflicting_point_share']:g}")
+
+
+def _outcome_text(c) -> str:
+    out = c.outcome
+    if not out:
+        return ""
+    if c.authority == "AUTHORITATIVE":
+        return f"{out.result}: {out.reason}"
+    return f"{NON_AUTH} - {out.result}: {out.reason}"
+
+
+def _basis_text(m: dict) -> str:
+    return "; ".join(f"{k}: {', '.join(v)}" for k, v in m.items())
 
 
 def _fmt(v):
@@ -49,7 +71,10 @@ def tables(ev: Evaluation) -> dict:
     h1 = (["Characteristic ID", "Characteristic", "CROSSCHECK state", "State basis", "Independent organizations",
            "Organizations", "Evidence items (counted / linked)", "Datasets"]
           + [f"Dim: {d}" for d in DIMENSIONS]
-          + ["Provisional outcome (not applied)", "Common conditions", "Max spread at common conditions",
+          + ["Authority", "Authority basis", "Provisional outcome (non-authoritative unless Authority = AUTHORITATIVE)",
+             "Trend agreement (from data)", "Trend basis", "Magnitude agreement (experimental tolerance)",
+             "Magnitude basis", "Metric basis (compared)", "Alternative basis (not compared)", "Thresholds",
+             "Common conditions", "Max spread at common conditions",
              "Recorded flag / assessment (unchanged)", "Open comparability questions"])
     r1 = []
     for c in ev.characteristics:
@@ -61,7 +86,10 @@ def tables(ev: Evaluation) -> dict:
             [reg.name(o) for o in ind.counted] if ind else [],
             f"{counted} / {len(c.items)}", sorted({r.item.dataset for r in c.items}),
             *[c.dims[d].status if c.dims else "UNKNOWN" for d in DIMENSIONS],
-            (f"{out.result}: {out.reason}" if out else ""),
+            c.authority, c.authority_reason, _outcome_text(c),
+            out.trend if out else "", out.trend_reason if out else "",
+            out.magnitude if out else "", out.magnitude_reason if out else "",
+            _basis_text(c.basis_by_org), _basis_text(c.alt_basis_by_org), _thresholds(ev.rules),
             [_pct(x) if isinstance(x, float) else x for x in out.common_points] if out else [],
             max((p.spread_all for p in out.points), default=None) if out else None,
             f"{c.recorded_flag or '-'} / {c.recorded_assessment or '-'}",
@@ -70,7 +98,9 @@ def tables(ev: Evaluation) -> dict:
     # --- Evidence Map: one row per evidence item x common condition (or one row if no series)
     h2 = ["Characteristic ID", "Evidence ID", "Dataset", "Organization", "Counted", "Exclusion / dedup note",
           "Variant", "Campaign", "Condition", "Baseline value", "Value", "Relative change vs baseline",
-          "Reported change (source)", "Relative change, alt. denominator", "Point classification",
+          "Reported change (source)", "Metric basis", "Relative change, alt. denominator",
+          "Reported change, alt. denominator (source)", "Alt. basis", "Reported-value diagnosis",
+          "Point classification (provisional)", "Direction agreement", "Magnitude (experimental tolerance)",
           "Point spread (all series)", "Gap between organizations", "Cited cells"]
     r2 = []
     for c in ev.characteristics:
@@ -86,14 +116,24 @@ def tables(ev: Evaluation) -> dict:
             base = [c.id, it.id, it.dataset, reg.name(org) if org else (it.organization or "not identified"),
                     "YES" if it.id in counted_ids else "NO", note, it.variant, it.campaign]
             if not r.x:
-                r2.append(base + [""] * 9 + ["; ".join(sorted(set(r.cited_cells)))])
+                r2.append(base + [""] * 15 + ["; ".join(sorted(set(r.cited_cells)))])
                 continue
             for x, v in zip(r.x, r.values):
                 p = pts.get(x)
+                diag = []
+                for lab, dd in sorted(r.reported_diagnosis.items()):
+                    if x in dd:
+                        d = dd[x]
+                        diag.append(f"{lab}: reported {d['reported']:g} vs exact {d['exact']:.4f}; "
+                                    + ("reproduced only by " + "; ".join(d["matches"]) if d["matches"]
+                                       else "no tested convention reproduces it"))
                 r2.append(base + [
                     _pct(x) if isinstance(x, float) else x, r.baseline, v, r.rel_change.get(x),
-                    r.reported_change.get(x), r.alt_rel_change.get(x),
+                    r.reported_change.get(x), r.basis or "unspecified", r.alt_rel_change.get(x),
+                    r.alt_reported_change.get(x), r.alt_basis or ("unspecified" if r.alt_rel_change else ""),
+                    "\n".join(diag),
                     p.classification if p else "not common",
+                    p.direction_agreement if p else "", p.magnitude if p else "",
                     p.spread_all if p else None, p.gap_between_orgs if p else None,
                     "; ".join(sorted(set(r.cited_cells))),
                 ])
@@ -192,6 +232,10 @@ def normalized(ev: Evaluation) -> dict:
             "independent_organizations": ind.counted if ind else [],
             "dimensions": {d: {"status": c.dims[d].status, "method": c.dims[d].method} for d in DIMENSIONS} if c.dims else {},
             "provisional_outcome": c.outcome.result if c.outcome else None,
+            "authority": c.authority, "authority_basis": c.authority_reason,
+            "trend_agreement": c.outcome.trend if c.outcome else None,
+            "magnitude_agreement": c.outcome.magnitude if c.outcome else None,
+            "metric_basis": c.basis_by_org, "alternative_basis": c.alt_basis_by_org,
             "dedup": ind.collapsed if ind else [],
             "open_questions": c.open_questions,
         })
@@ -203,6 +247,10 @@ def normalized(ev: Evaluation) -> dict:
                 "excluded_reason": ind.excluded.get(r.item.id) if ind else None,
                 "variant": r.item.variant, "campaign": r.item.campaign,
                 "relative_change": {f"{x:g}": round(v, 6) for x, v in sorted(r.rel_change.items())},
+                "metric_basis": r.basis, "alternative_basis": r.alt_basis,
+                "relative_change_alt_basis": {f"{x:g}": round(v, 6) for x, v in sorted(r.alt_rel_change.items())},
+                "reported_value_diagnosis": {lab: {f"{x:g}": d for x, d in sorted(dd.items())}
+                                             for lab, dd in sorted(r.reported_diagnosis.items())},
                 "cited_cells": sorted(set(r.cited_cells)),
             })
     return {"organizations": orgs, "datasets": datasets, "characteristics": chars, "evidence": rels}
@@ -239,11 +287,14 @@ def write_markdown(ev: Evaluation, path: Path) -> Path:
          "## States", "", "| State | Count |", "|---|---|"]
     from .model import STATES
     L += [f"| {s} | {cnt.get(s, 0)} |" for s in STATES]
-    L += ["", "## Characteristics", "",
-          "| ID | Characteristic | State | Basis | Provisional outcome |", "|---|---|---|---|---|"]
+    L += ["", f"Outcome settings: {_thresholds(ev.rules)}. {ev.rules.get('threshold_note', '')}".rstrip(),
+          "", "## Characteristics", "",
+          "| ID | Characteristic | State | Basis | Authority | Provisional outcome | Trend | Magnitude |",
+          "|---|---|---|---|---|---|---|---|"]
     for c in ev.characteristics:
-        L.append(f"| {c.id} | {c.name} | {c.state} | {c.state_reason} | "
-                 f"{(c.outcome.result + ': ' + c.outcome.reason) if c.outcome else '-'} |")
+        o = c.outcome
+        L.append(f"| {c.id} | {c.name} | {c.state} | {c.state_reason} | {c.authority} | "
+                 f"{_outcome_text(c) or '-'} | {o.trend if o else '-'} | {o.magnitude if o else '-'} |")
     for c in ev.characteristics:
         if not c.items:
             continue
@@ -259,7 +310,22 @@ def write_markdown(ev: Evaluation, path: Path) -> Path:
             for p in c.outcome.points:
                 rngs = " | ".join(f"{p.org_ranges[o][0]:+.3f} … {p.org_ranges[o][1]:+.3f}" for o in orgs)
                 L.append(f"| {_pct(p.x) if isinstance(p.x, float) else p.x} | {rngs} | {p.spread_all:.3f} | "
-                         f"{p.gap_between_orgs:.3f} | {p.classification} |")
+                         f"{p.gap_between_orgs:.3f} | {p.classification} ({p.direction_agreement}, "
+                         f"{p.magnitude}) |")
+            L += ["", f"Authority: {c.authority} ({c.authority_reason})",
+                  f"Trend agreement (from data): {c.outcome.trend} ({c.outcome.trend_reason})",
+                  f"Magnitude agreement (experimental tolerance): {c.outcome.magnitude} "
+                  f"({c.outcome.magnitude_reason})"]
+        if c.basis_by_org or c.alt_basis_by_org:
+            L += ["", f"Metric basis compared: {_basis_text(c.basis_by_org) or 'unspecified'}; "
+                      f"alternative basis (not compared): {_basis_text(c.alt_basis_by_org) or '-'}"]
+        for r in c.items:
+            for lab, dd in sorted(r.reported_diagnosis.items()):
+                for x, d in sorted(dd.items()):
+                    L.append(f"\nReported-value diagnosis {r.item.id} {lab} at {_pct(x)}: reported "
+                             f"{d['reported']:g}, exact {d['exact']:.4f}; "
+                             + ("reproduced only by " + "; ".join(d["matches"]) if d["matches"]
+                                else "no tested convention reproduces it") + ". Measured values unchanged.")
         if c.independence and c.independence.collapsed:
             L += ["", "Deduplication: " + "; ".join(c.independence.collapsed)]
         if c.open_questions:

@@ -24,6 +24,12 @@ class CharEval:
     outcome: outcome_mod.Outcome | None = None
     state: str = "NOT_ASSESSED"
     state_reason: str = ""
+    authority: str = "NOT_APPLICABLE"  # AUTHORITATIVE | PROVISIONAL | NOT_APPLICABLE
+    authority_reason: str = ""
+    basis_by_org: dict = field(default_factory=dict)  # verified primary metric basis -> [org]
+    alt_basis_by_org: dict = field(default_factory=dict)  # verified alternative basis -> [org]
+    basis_mismatch: str = ""
+    basis_missing: list = field(default_factory=list)
     open_questions: list = field(default_factory=list)
 
 
@@ -55,18 +61,62 @@ def _state(ce: CharEval, rules: dict) -> None:
     req = rules["required_dimensions"]
     nc = [d for d in req if eff[ce.dims[d].status] == "not_comparable"]
     pend = [d for d in req if eff[ce.dims[d].status] == "pending"]
+    # strict dimensions must be COMPARABLE; the effect mapping cannot relax them
+    pend += [d for d in rules.get("strict_dimensions", [])
+             if ce.dims[d].status != "COMPARABLE" and d not in nc and d not in pend]
     if nc:
         ce.state = "MULTI_SOURCE_NOT_COMPARABLE"
         ce.state_reason = f"{n} organizations; not comparable on: {', '.join(nc)}"
     elif pend:
         ce.state = "CROSSCHECK_PENDING"
         ce.state_reason = f"{n} organizations; comparability not demonstrated for: {', '.join(pend)}"
+    elif ce.basis_mismatch:
+        ce.state = "CROSSCHECK_PENDING"
+        ce.state_reason = f"{n} organizations; {ce.basis_mismatch}"
     elif ce.outcome is None or ce.outcome.result == "INSUFFICIENT":
         ce.state = "CROSSCHECK_PENDING"
         ce.state_reason = f"{n} organizations; " + (ce.outcome.reason if ce.outcome else "no comparable series")
     else:
         ce.state = f"CROSSCHECKED_{ce.outcome.result}"
         ce.state_reason = f"{n} organizations; all required dimensions comparable; {ce.outcome.reason}"
+
+
+def _authority(ce: CharEval, rules: dict) -> None:
+    """A CROSSCHECKED state is authoritative only with approved thresholds and
+    every required dimension demonstrably COMPARABLE (no relaxed mapping)."""
+    if not ce.state.startswith("CROSSCHECKED_"):
+        ce.authority = "NOT_APPLICABLE"
+        ce.authority_reason = ("provisional outcome only, not applied (non-authoritative)"
+                               if ce.outcome and ce.outcome.result != "INSUFFICIENT" else "")
+        return
+    why = []
+    if rules.get("threshold_status", "EXPERIMENTAL") != "APPROVED":
+        why.append("outcome thresholds are experimental")
+    weak = [d for d in rules["required_dimensions"] if ce.dims[d].status != "COMPARABLE"]
+    if weak:
+        why.append("not demonstrably comparable: " + ", ".join(weak))
+    ce.authority = "PROVISIONAL" if why else "AUTHORITATIVE"
+    ce.authority_reason = "; ".join(why) or "approved thresholds; all required dimensions comparable"
+
+
+def _bases(ce: CharEval, counted_ids: set, registry) -> None:
+    prim, alt, missing = {}, {}, []
+    for r in ce.items:
+        if r.item.id not in counted_ids or not r.usable:
+            continue
+        org = registry.name(registry.resolve(r.item.organization))
+        if r.basis:
+            prim.setdefault(r.basis, set()).add(org)
+        else:
+            missing.append(r.item.id)
+        if r.alt_basis:
+            alt.setdefault(r.alt_basis, set()).add(org)
+    ce.basis_by_org = {k: sorted(v) for k, v in sorted(prim.items())}
+    ce.alt_basis_by_org = {k: sorted(v) for k, v in sorted(alt.items())}
+    if len(prim) > 1:
+        ce.basis_mismatch = ("metric basis differs across evidence: "
+                             + "; ".join(f"{k}: {', '.join(v)}" for k, v in ce.basis_by_org.items()))
+    ce.basis_missing = sorted(missing)
 
 
 def _questions(ce: CharEval, counted_items: list, spec: Spec, registry) -> list:
@@ -95,6 +145,14 @@ def _questions(ce: CharEval, counted_items: list, spec: Spec, registry) -> list:
             qs.append(f"[facet:{name}] differs across organizations ({desc}); confirm effect on comparability")
         if missing:
             qs.append(f"[facet:{name}] not stated (verified) for: {', '.join(missing)}")
+    if ce.basis_missing:
+        qs.append(f"[metric_basis] denominator basis not stated (verified) for: {', '.join(ce.basis_missing)}")
+    if ce.basis_mismatch:
+        qs.append(f"[metric_basis] {ce.basis_mismatch}")
+    for b, orgs in ce.alt_basis_by_org.items():
+        if b not in ce.basis_by_org:
+            qs.append(f"[metric_basis] alternative basis '{b}' reported by {', '.join(orgs)} only; "
+                      "not used for cross-organization comparison")
     qs += [f"[rapporteur] {q}" for q in spec.questions.get(ce.id, [])]
     return qs
 
@@ -156,6 +214,7 @@ def run(original: Path, annotated: Path, spec: Spec, rules: dict | None = None) 
         counted = [r.item for r in ce.items if r.item.id in counted_ids]
         org_of = {it.id: registry.resolve(it.organization) for it in counted}
         ce.dims = comparability.assess(ce.id, counted, spec.assessments, org_of)
+        _bases(ce, counted_ids, registry)
         if ce.independence.n >= 2:
             by_org = {}
             for r in ce.items:
@@ -164,6 +223,7 @@ def run(original: Path, annotated: Path, spec: Spec, rules: dict | None = None) 
             ce.outcome = outcome_mod.evaluate(by_org, rules["outcome"],
                                               ce.dims["qualitative_conclusion"].disagreement)
         _state(ce, rules)
+        _authority(ce, rules)
         ce.open_questions = _questions(ce, counted, spec, registry) if ce.items else []
 
         # compare with what the workbook records (never changed)
@@ -177,7 +237,7 @@ def run(original: Path, annotated: Path, spec: Spec, rules: dict | None = None) 
                                         f"evidence datasets {used} differ from workbook reference {ref_ids}"))
             issues.append(Issue("INFO", "state", ce.id,
                                 f"recorded: {ce.recorded_flag or '-'} / {ce.recorded_assessment or '-'}; "
-                                f"evaluated: {ce.state} (recorded values not changed)"))
+                                f"evaluated: {ce.state} [{ce.authority}] (recorded values not changed)"))
     issues.extend(_historical_gaps(s1.datasets))
 
     # de-duplicate identical issues, deterministic order

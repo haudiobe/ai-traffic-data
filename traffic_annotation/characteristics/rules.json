@@ -12,15 +12,20 @@
     "statistical_basis",
     "qualitative_conclusion"
   ],
+  "strict_dimensions": [
+    "statistical_basis"
+  ],
   "dimension_status_effect": {
     "COMPARABLE": "ok",
     "PARTIAL": "pending",
     "UNKNOWN": "pending",
     "NOT_COMPARABLE": "not_comparable"
   },
+  "threshold_status": "EXPERIMENTAL",
+  "threshold_note": "Dead band, magnitude tolerance, minimum common points, conflicting share and reported-value tolerance are experimental working values for review. They are not normative and have not been agreed. While threshold_status is EXPERIMENTAL no CROSSCHECKED state is authoritative.",
   "outcome": {
     "deadband": 0.05,
-    "magnitude_tolerance": 0.10,
+    "magnitude_tolerance": 0.1,
     "min_common_points": 2,
     "conflicting_point_share": 0.5
   },

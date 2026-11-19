@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .. import safety, workbook as wbm
 from . import evaluate, gsheets, review
-from .model import STATES, load_rules
+from .model import AUTHORITY, STATES, load_rules
 from .spec import load_spec
 
 
@@ -57,6 +57,9 @@ def main(argv=None) -> int:
     sev = Counter(i.severity for i in ev.issues)
     print("characteristics=" + str(len(ev.characteristics)) + " "
           + " ".join(f"{s}={states.get(s, 0)}" for s in STATES))
+    auth = Counter(c.authority for c in ev.characteristics)
+    print("authority: " + " ".join(f"{k}={auth.get(k, 0)}" for k in AUTHORITY)
+          + f" (thresholds {ev.rules.get('threshold_status', 'EXPERIMENTAL')})")
     print(" ".join(f"{k}={sev.get(k, 0)}" for k in ("ERROR", "WARNING", "QUALIFIED_GAP", "INFO")))
     print("inputs unchanged (SHA-256 verified)")
     for p in written:

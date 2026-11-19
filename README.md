@@ -93,5 +93,10 @@ across independent organizations. It applies the CROSSCHECK states
 `CROSSCHECK_PENDING`, `CROSSCHECKED_CONSISTENT`, `CROSSCHECKED_MIXED` and
 `CROSSCHECKED_CONFLICTING`, with explicit comparability over nine dimensions
 and verbatim-citation checks, and writes a four-tab review XLSX.
+Stage 2.1 separates trend agreement from magnitude agreement and labels
+results by authority. Thresholds are experimental, so no CROSSCHECKED result
+is authoritative under the packaged rules. Uncertain statistical evidence
+keeps a characteristic pending. Denominator bases are distinguished, and
+non-reproduced reported values are diagnosed without changing them.
 `python -m traffic_annotation.publication` checks staged changes before a
-commit. See [docs/stage2-characteristic-crosscheck.md](docs/stage2-characteristic-crosscheck.md).
+commit (`check`) and scans the full Git history (`history`). See [docs/stage2-characteristic-crosscheck.md](docs/stage2-characteristic-crosscheck.md).

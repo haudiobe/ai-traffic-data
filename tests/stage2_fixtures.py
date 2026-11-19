@@ -17,7 +17,7 @@ LABELS = ["lossy 5%", "lossy 10%", "lossy 20%", "lossy 30%"]
 
 
 def loss_sheet(wb, name, base, values, direction="UL", conclusion="degradation increases with loss",
-               labels=LABELS, reported=None, n=100):
+               labels=LABELS, reported=None, n=100, extra_rows=()):
     ws = wb.create_sheet(name)
     ws["A1"] = f"{name} Synthetic loss sweep"
     ws["A2"] = f"Loss model: uncorrelated {direction} packet loss, no added delay"
@@ -28,6 +28,8 @@ def loss_sheet(wb, name, base, values, direction="UL", conclusion="degradation i
     ws.append(["Metric", "no_emul", *labels])  # row 7
     ws.append(["Correct", base, *values])  # row 8
     ws.append(["Reported change", "-", *(reported or [round((v - base) / base, 3) for v in values])])  # row 9
+    for row in extra_rows:  # rows 10+
+        ws.append(list(row))
     return ws
 
 
