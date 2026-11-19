@@ -81,5 +81,6 @@ fails if such files are staged. Tests use synthetic workbooks built at test time
 python -m pytest -q
 ```
 
-See [docs/crosscheck-S4-262210.md](docs/crosscheck-S4-262210.md) for the
-crosscheck of the S4-262210 annotated workbook.
+See [docs/stage1-crosscheck.md](docs/stage1-crosscheck.md) for decisions,
+outputs and how to interpret them. Reports for a specific workbook are
+source-derived and are kept outside this repository.
