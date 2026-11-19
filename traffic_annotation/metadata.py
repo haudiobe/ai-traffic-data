@@ -16,7 +16,7 @@ MANDATORY = ('Contributor', 'Creation date', 'Scenario ID', 'Scenario version',
              'Network profile ID(s)', 'Application category', 'Traffic direction',
              'Model provider', 'Model name', 'Execution date', 'Number of runs')
 # Dataset ID is also mandatory under B.4.4, checked separately as a primary key.
-MISSING = re.compile(r'^\\s*(?:-|–|—|n/?a|none|unknown|tbd|tbc|\\?|not\\s+(?:identified|explicit|recorded|available|known|demonstrated|provided|stated)\\b.*)?\\s*$', re.I)
+MISSING = re.compile(r'^\s*(?:-|–|—|n/?a|none|unknown|tbd|tbc|\?|not\s+(?:identified|explicit|recorded|available|known|demonstrated|provided|stated)\b.*)?\s*$', re.I)
 
 def missing(value):
     return value is None or (isinstance(value, str) and bool(MISSING.fullmatch(value)))
